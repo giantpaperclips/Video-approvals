@@ -4,7 +4,6 @@ import { supabase } from "./lib/supabase";
 export default function VideoReviewApp() {
   const videoRef = useRef(null);
 
-  // REVIEW STATE
   const [reviewId, setReviewId] = useState(null);
   const [title, setTitle] = useState("");
   const [videoUrl, setVideoUrl] = useState("");
@@ -12,7 +11,6 @@ export default function VideoReviewApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [duration, setDuration] = useState(0);
 
-  // USER + COMMENTS
   const [username, setUsername] = useState("");
   const [comments, setComments] = useState([]);
   const [text, setText] = useState("");
@@ -20,7 +18,9 @@ export default function VideoReviewApp() {
   const isApproved = status === "approved";
   const sortedComments = [...comments].sort((a, b) => a.time - b.time);
 
-  /* ───────────── LOAD REVIEW ───────────── */
+  const isSharePoint = videoUrl.includes("sharepoint") || videoUrl.includes("stream");
+
+  /* LOAD REVIEW */
   const loadReview = async (id) => {
     const { data } = await supabase
       .from("reviews")
@@ -37,7 +37,7 @@ export default function VideoReviewApp() {
     setIsLoading(false);
   };
 
-  /* ───────────── LOAD COMMENTS ───────────── */
+  /* LOAD COMMENTS */
   const loadComments = async (id) => {
     const { data } = await supabase
       .from("comments")
@@ -47,7 +47,7 @@ export default function VideoReviewApp() {
     if (data) setComments(data);
   };
 
-  /* ───────────── REALTIME (FILTERED) ───────────── */
+  /* REALTIME */
   useEffect(() => {
     if (!reviewId) return;
 
@@ -62,18 +62,15 @@ export default function VideoReviewApp() {
           filter: `review_id=eq.${reviewId}`,
         },
         () => {
-          // delay avoids race vs insert/update
           setTimeout(() => loadComments(reviewId), 150);
         }
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => supabase.removeChannel(channel);
   }, [reviewId]);
 
-  /* ───────────── INITIAL LOAD ───────────── */
+  /* INITIAL LOAD */
   useEffect(() => {
     const storedName = localStorage.getItem("review-username");
     if (storedName) setUsername(storedName);
@@ -89,7 +86,28 @@ export default function VideoReviewApp() {
     }
   }, []);
 
-  /* ───────────── ADD COMMENT (OPTIMISTIC) ───────────── */
+  /* CREATE REVIEW */
+  const createReview = async () => {
+    if (!title || !videoUrl) return;
+
+    const id = crypto.randomUUID();
+
+    await supabase.from("reviews").insert({
+      id,
+      title,
+      video_url: videoUrl,
+      status: "in_review",
+    });
+
+    window.location.search = `?review=${id}`;
+  };
+
+  /* NEW REVIEW BUTTON */
+  const createNew = () => {
+    window.location.href = "/";
+  };
+
+  /* ADD COMMENT */
   const addComment = async () => {
     if (!text || !username || !reviewId || isApproved) return;
 
@@ -102,58 +120,30 @@ export default function VideoReviewApp() {
       resolved: false,
     };
 
-    // ✅ instant UI feedback
     setComments((prev) => [...prev, comment]);
     setText("");
     localStorage.setItem("review-username", username);
 
-    const { error } = await supabase.from("comments").insert(comment);
-
-    // rollback if insert fails
-    if (error) {
-      console.error("❌ Failed to save comment:", error);
-      setComments((prev) => prev.filter((c) => c.id !== comment.id));
-    }
+    await supabase.from("comments").insert(comment);
   };
 
-  /* ───────────── TOGGLE RESOLVED (OPTIMISTIC) ───────────── */
+  /* TOGGLE */
   const toggleResolved = async (id) => {
     if (isApproved) return;
 
     const comment = comments.find((c) => c.id === id);
     if (!comment) return;
 
-    // ✅ immediate UI update
     setComments((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, resolved: !c.resolved } : c
       )
     );
 
-    const { error } = await supabase
+    await supabase
       .from("comments")
       .update({ resolved: !comment.resolved })
       .eq("id", id);
-
-    // rollback if update fails
-    if (error) {
-      console.error("❌ Failed to toggle resolve:", error);
-      setComments((prev) =>
-        prev.map((c) =>
-          c.id === id ? { ...c, resolved: comment.resolved } : c
-        )
-      );
-    }
-  };
-
-  /* ───────────── APPROVE REVIEW ───────────── */
-  const approveReview = async () => {
-    await supabase
-      .from("reviews")
-      .update({ status: "approved" })
-      .eq("id", reviewId);
-
-    setStatus("approved");
   };
 
   const formatTime = (s) =>
@@ -161,133 +151,89 @@ export default function VideoReviewApp() {
       .toString()
       .padStart(2, "0")}`;
 
-  /* ───────────── RENDER ───────────── */
-  if (isLoading) {
-    return <p style={{ padding: 32 }}>Loading review…</p>;
-  }
+  /* LOADING */
+  if (isLoading) return <p style={{ padding: 32 }}>Loading…</p>;
 
-  return (
-    <div style={{ maxWidth: 820, margin: "40px auto", fontFamily: "system-ui" }}>
-      <h1 style={{ textAlign: "center" }}>{title}</h1>
+  /* CREATE SCREEN (WITH INSTRUCTIONS) */
+  if (!reviewId) {
+    return (
+      <div style={{ maxWidth: 600, margin: "40px auto", fontFamily: "system-ui" }}>
+        <h1>Video Review Tool</h1>
 
-      {/* VIDEO */}
-      <video
-        ref={videoRef}
-        src={videoUrl}
-        controls
-        width="100%"
-        preload="metadata"
-        onLoadedMetadata={() =>
-          setDuration(videoRef.current?.duration || 0)
-        }
-        style={{ borderRadius: 8 }}
-      />
-
-      {/* TIMELINE MARKERS */}
-      {duration > 0 && sortedComments.length > 0 && (
-        <div
-          style={{
-            position: "relative",
-            height: 10,
-            background: "#ddd",
-            margin: "14px 0",
-            borderRadius: 5,
-          }}
-        >
-          {sortedComments.map((c) => (
-            <div
-              key={c.id}
-              title={`${formatTime(c.time)} — ${c.text}`}
-              onClick={() => {
-                videoRef.current.currentTime = c.time;
-                videoRef.current.play();
-              }}
-              style={{
-                position: "absolute",
-                left: `${(c.time / duration) * 100}%`,
-                top: "50%",
-                transform: "translate(-50%, -50%)",
-                width: 12,
-                height: 12,
-                borderRadius: "50%",
-                background: c.resolved ? "#4caf50" : "#e53935",
-                cursor: "pointer",
-              }}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* COMMENTS */}
-      <section style={{ marginTop: 24 }}>
-        <h2>Comments</h2>
+        <p>
+          <strong>How to use:</strong><br />
+          1. Paste a SharePoint or MP4 video link<br />
+          2. Click Create Review<br />
+          3. Share the URL with your team<br />
+          4. Add timestamped comments<br />
+          5. Resolve comments before approval
+        </p>
 
         <input
-          placeholder="Your name"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          disabled={isApproved}
-          style={{ width: "100%", padding: 8 }}
+          placeholder="Video Title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          style={{ width: "100%", padding: 8, marginBottom: 10 }}
         />
 
-        <textarea
-          placeholder="Add a comment at the current time"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={isApproved}
-          style={{ width: "100%", padding: 8, marginTop: 8 }}
+        <input
+          placeholder="Paste SharePoint or MP4 video URL"
+          value={videoUrl}
+          onChange={(e) => setVideoUrl(e.target.value)}
+          style={{ width: "100%", padding: 8, marginBottom: 10 }}
         />
 
-        <button
-          onClick={addComment}
-          disabled={!text || !username || isApproved}
-          style={{
-            marginTop: 8,
-            opacity: !text || !username || isApproved ? 0.6 : 1,
-            cursor:
-              !text || !username || isApproved ? "not-allowed" : "pointer",
-          }}
-        >
-          Add Comment
-        </button>
+        <button onClick={createReview}>Create Review</button>
+      </div>
+    );
+  }
 
-        <ul style={{ listStyle: "none", padding: 0, marginTop: 16 }}>
-          {sortedComments.map((c) => (
-            <li
-              key={c.id}
-              style={{
-                padding: 12,
-                marginBottom: 8,
-                background: "#fafafa",
-                borderRadius: 6,
-                opacity: c.resolved ? 0.6 : 1,
-                textDecoration: c.resolved ? "line-through" : "none",
-              }}
-            >
-              <strong>{formatTime(c.time)}</strong> — {c.text} ({c.username})
-              <div>
-                <button
-                  onClick={() => toggleResolved(c.id)}
-                  disabled={isApproved}
-                >
-                  {c.resolved ? "Reopen" : "Resolve"}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+  /* MAIN REVIEW UI */
+  return (
+    <div style={{ maxWidth: 820, margin: "40px auto", fontFamily: "system-ui" }}>
+      <h1>{title}</h1>
 
-        {!isApproved &&
-          sortedComments.length > 0 &&
-          sortedComments.every((c) => c.resolved) && (
-            <button onClick={approveReview}>
-              Mark as Approved
+      {/* NEW REVIEW BUTTON */}
+      <button onClick={createNew} style={{ marginBottom: 10 }}>
+        ➕ Create New Review
+      </button>
+
+      {/* VIDEO HANDLING */}
+      {isSharePoint ? (
+        {videoUrl}
+      ) : (
+        {videoUrl} =>
+            setDuration(videoRef.current?.duration || 0)
+          }
+        />
+      )}
+
+      <h2>Comments</h2>
+
+      <input
+        placeholder="Your name"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+      />
+
+      <textarea
+        placeholder="Add comment at current time"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+
+      <button onClick={addComment}>Add Comment</button>
+
+      <ul>
+        {sortedComments.map((c) => (
+          <li key={c.id}>
+            <strong>{formatTime(c.time)}</strong> — {c.text}
+            <button onClick={() => toggleResolved(c.id)}>
+              {c.resolved ? "Reopen" : "Resolve"}
             </button>
-          )}
-
-        {isApproved && <p>✅ Review approved (locked)</p>}
-      </section>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
-``
